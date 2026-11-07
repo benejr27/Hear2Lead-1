@@ -18,10 +18,6 @@ $selected_org_id = $is_admin ? (isset($_GET['org_id']) ? intval($_GET['org_id'])
 $filter_date = trim($_GET['filter_date'] ?? '');
 $date_from = trim($_GET['date_from'] ?? '');
 $date_to = trim($_GET['date_to'] ?? '');
-$active_log_tab = trim($_GET['log_tab'] ?? 'all_logs');
-if (!in_array($active_log_tab, ['all_logs', 'task_logs', 'project_logs', 'acc_logs', 'student_logs'], true)) {
-    $active_log_tab = 'all_logs';
-}
 $auto_print = isset($_GET['auto_print']) && $_GET['auto_print'] === '1';
 
 // Fetch all orgs for Admin filter dropdown
@@ -223,116 +219,6 @@ $stmt = $pdo->prepare($projects_sql);
 $stmt->execute($proj_params);
 $projects_list = $stmt->fetchAll();
 
-// ----------------------------------------------------
-// 5. Activity & Audit Logs (Filtered)
-// ----------------------------------------------------
-// 5a. Task Logs
-$tl_conds = ["1=1"];
-$tl_params = [];
-if ($selected_org_id > 0) {
-    $tl_conds[] = "t.org_id = ?";
-    $tl_params[] = $selected_org_id;
-}
-if (!empty($filter_date)) {
-    $tl_conds[] = "DATE(tl.created_at) = ?";
-    $tl_params[] = $filter_date;
-}
-if (!empty($date_from)) {
-    $tl_conds[] = "DATE(tl.created_at) >= ?";
-    $tl_params[] = $date_from;
-}
-if (!empty($date_to)) {
-    $tl_conds[] = "DATE(tl.created_at) <= ?";
-    $tl_params[] = $date_to;
-}
-$tl_where = implode(" AND ", $tl_conds);
-$stmt_tl = $pdo->prepare("SELECT tl.*, t.title as task_title, t.assigned_to, t.status as task_status, o.acronym as org_acronym
-                          FROM task_logs tl
-                          JOIN tasks t ON tl.task_id = t.id
-                          LEFT JOIN organizations o ON t.org_id = o.id
-                          WHERE $tl_where
-                          ORDER BY tl.created_at DESC, tl.id DESC");
-$stmt_tl->execute($tl_params);
-$report_task_logs = $stmt_tl->fetchAll();
-
-// 5b. Project Logs
-$pl_conds = ["1=1"];
-$pl_params = [];
-if ($selected_org_id > 0) {
-    $pl_conds[] = "p.org_id = ?";
-    $pl_params[] = $selected_org_id;
-}
-if (!empty($filter_date)) {
-    $pl_conds[] = "DATE(pl.created_at) = ?";
-    $pl_params[] = $filter_date;
-}
-if (!empty($date_from)) {
-    $pl_conds[] = "DATE(pl.created_at) >= ?";
-    $pl_params[] = $date_from;
-}
-if (!empty($date_to)) {
-    $pl_conds[] = "DATE(pl.created_at) <= ?";
-    $pl_params[] = $date_to;
-}
-$pl_where = implode(" AND ", $pl_conds);
-$stmt_pl = $pdo->prepare("SELECT pl.*, p.title as project_title, p.progress_percent, p.status as project_status, o.acronym as org_acronym
-                          FROM project_logs pl
-                          JOIN projects p ON pl.project_id = p.id
-                          LEFT JOIN organizations o ON p.org_id = o.id
-                          WHERE $pl_where
-                          ORDER BY pl.created_at DESC, pl.id DESC");
-$stmt_pl->execute($pl_params);
-$report_project_logs = $stmt_pl->fetchAll();
-
-// 5c. Accomplishment Logs
-$al_conds = ["1=1"];
-$al_params = [];
-if ($selected_org_id > 0) {
-    $al_conds[] = "a.org_id = ?";
-    $al_params[] = $selected_org_id;
-}
-if (!empty($filter_date)) {
-    $al_conds[] = "DATE(al.created_at) = ?";
-    $al_params[] = $filter_date;
-}
-if (!empty($date_from)) {
-    $al_conds[] = "DATE(al.created_at) >= ?";
-    $al_params[] = $date_from;
-}
-if (!empty($date_to)) {
-    $al_conds[] = "DATE(al.created_at) <= ?";
-    $al_params[] = $date_to;
-}
-$al_where = implode(" AND ", $al_conds);
-$stmt_al = $pdo->prepare("SELECT al.*, a.title as acc_title, a.badge_tag, a.date_accomplished, o.acronym as org_acronym
-                          FROM accomplishment_logs al
-                          JOIN accomplishments a ON al.acc_id = a.id
-                          LEFT JOIN organizations o ON a.org_id = o.id
-                          WHERE $al_where
-                          ORDER BY al.created_at DESC, al.id DESC");
-$stmt_al->execute($al_params);
-$report_acc_logs = $stmt_al->fetchAll();
-
-// 5d. Student Account Status Logs
-$sl_conds = ["1=1"];
-$sl_params = [];
-if (!empty($filter_date)) {
-    $sl_conds[] = "DATE(sl.created_at) = ?";
-    $sl_params[] = $filter_date;
-}
-if (!empty($date_from)) {
-    $sl_conds[] = "DATE(sl.created_at) >= ?";
-    $sl_params[] = $date_from;
-}
-if (!empty($date_to)) {
-    $sl_conds[] = "DATE(sl.created_at) <= ?";
-    $sl_params[] = $date_to;
-}
-$sl_where = implode(" AND ", $sl_conds);
-$stmt_sl = $pdo->prepare("SELECT sl.* FROM student_logs sl WHERE $sl_where ORDER BY sl.created_at DESC, sl.id DESC");
-$stmt_sl->execute($sl_params);
-$report_student_logs = $stmt_sl->fetchAll();
-
 // Format human-readable period label & filter description
 $period_label = 'All Time (Cumulative Records)';
 $filter_criteria_badges = [];
@@ -354,23 +240,13 @@ if (!empty($filter_date)) {
     $filter_criteria_badges[] = "Date Scope: All Time";
 }
 
-$log_tab_labels = [
-    'all_logs' => 'All Activity & Audit Logs',
-    'task_logs' => 'Task Activity Logs Only',
-    'project_logs' => 'Project Activity Logs Only',
-    'acc_logs' => 'Accomplishment Activity Logs Only',
-    'student_logs' => 'Student Account Status Logs Only'
-];
-$filter_criteria_badges[] = "Log Scope: " . ($log_tab_labels[$active_log_tab] ?? 'All Activity & Audit Logs');
-
-$report_ref_no = 'H2L-RPT-' . date('Ymd') . '-' . strtoupper(substr(md5($selected_org_id . $filter_date . $date_from . $date_to . $active_log_tab), 0, 5));
+$report_ref_no = 'H2L-RPT-' . date('Ymd') . '-' . strtoupper(substr(md5($selected_org_id . $filter_date . $date_from . $date_to), 0, 5));
 
 $back_query = http_build_query([
     'org_id' => $selected_org_id,
     'filter_date' => $filter_date,
     'date_from' => $date_from,
-    'date_to' => $date_to,
-    'log_tab' => ($active_log_tab === 'all_logs' ? 'task_logs' : $active_log_tab)
+    'date_to' => $date_to
 ]);
 ?>
 <!DOCTYPE html>
@@ -931,16 +807,7 @@ $back_query = http_build_query([
         <label style="color: #cbd5e1; font-weight: 600;">To:</label>
         <input type="date" name="date_to" value="<?= htmlspecialchars($date_to) ?>" class="toolbar-input" onchange="this.form.filter_date.value=''; this.form.submit();">
 
-        <label style="color: #cbd5e1; font-weight: 600;">Logs Scope:</label>
-        <select name="log_tab" class="toolbar-select" onchange="this.form.submit()">
-          <option value="all_logs" <?= $active_log_tab === 'all_logs' ? 'selected' : '' ?>>All Activity Logs</option>
-          <option value="task_logs" <?= $active_log_tab === 'task_logs' ? 'selected' : '' ?>>Task Logs Only</option>
-          <option value="project_logs" <?= $active_log_tab === 'project_logs' ? 'selected' : '' ?>>Project Logs Only</option>
-          <option value="acc_logs" <?= $active_log_tab === 'acc_logs' ? 'selected' : '' ?>>Accomplishment Logs Only</option>
-          <option value="student_logs" <?= $active_log_tab === 'student_logs' ? 'selected' : '' ?>>Student Status Logs Only</option>
-        </select>
-
-        <?php if (($is_admin && $selected_org_id > 0) || !empty($filter_date) || !empty($date_from) || !empty($date_to) || $active_log_tab !== 'all_logs'): ?>
+        <?php if (($is_admin && $selected_org_id > 0) || !empty($filter_date) || !empty($date_from) || !empty($date_to)): ?>
           <a href="print_report.php" class="toolbar-btn toolbar-btn-back" style="padding: 0.3rem 0.6rem; font-size: 0.74rem;">
             <i class="fa-solid fa-rotate-left"></i> Reset
           </a>
@@ -954,7 +821,6 @@ $back_query = http_build_query([
         <label><input type="checkbox" checked onchange="toggleReportSection('sec-tasks', this.checked)"> Tasks Roster</label>
         <label><input type="checkbox" checked onchange="toggleReportSection('sec-projects', this.checked)"> Programs/Projects</label>
         <label><input type="checkbox" checked onchange="toggleReportSection('sec-accomplishments', this.checked)"> Accomplishments</label>
-        <label><input type="checkbox" checked onchange="toggleReportSection('sec-logs', this.checked)"> Audit Logs</label>
       </div>
     </div>
   </div>
@@ -1295,171 +1161,9 @@ $back_query = http_build_query([
       </table>
     </div>
 
-    <!-- SECTION VI: Filtered Activity & Audit Logs -->
-    <div class="report-section" id="sec-logs">
-      <div class="section-title-bar">
-        <h3>VI. Official Activity &amp; Audit Logs (<?= htmlspecialchars($log_tab_labels[$active_log_tab] ?? 'All Activity Logs') ?>)</h3>
-        <span class="section-count">Filtered Audit Trail</span>
-      </div>
-
-      <?php if ($active_log_tab === 'all_logs' || $active_log_tab === 'task_logs'): ?>
-        <div style="margin-bottom: 1rem;">
-          <div style="font-weight: 800; font-size: 0.78rem; color: var(--primary); margin-bottom: 0.35rem; text-transform: uppercase;">
-            A. Task Activity Logs (<?= count($report_task_logs) ?>)
-          </div>
-          <table class="official-table">
-            <thead>
-              <tr>
-                <?php if ($selected_org_id === 0): ?><th>Org</th><?php endif; ?>
-                <th>Task Title</th>
-                <th>Action</th>
-                <th>Logged By</th>
-                <th>Activity &amp; Change Details</th>
-                <th>Timestamp</th>
-              </tr>
-            </thead>
-            <tbody>
-              <?php if (empty($report_task_logs)): ?>
-                <tr><td colspan="<?= $selected_org_id === 0 ? '6' : '5' ?>" style="text-align: center; color: var(--gray-500);">No task activity logs for the selected period.</td></tr>
-              <?php else: ?>
-                <?php foreach ($report_task_logs as $log): ?>
-                  <tr>
-                    <?php if ($selected_org_id === 0): ?><td><strong><?= htmlspecialchars($log['org_acronym'] ?? 'ORG') ?></strong></td><?php endif; ?>
-                    <td><strong><?= htmlspecialchars($log['task_title'] ?? ('Task #' . $log['task_id'])) ?></strong></td>
-                    <td><span class="status-pill status-inprogress"><?= htmlspecialchars($log['action_type']) ?></span></td>
-                    <td><strong><?= htmlspecialchars($log['user_name']) ?></strong> <span style="color:var(--gray-500);">(<?= htmlspecialchars($log['user_role']) ?>)</span></td>
-                    <td><?= htmlspecialchars($log['log_details']) ?></td>
-                    <td style="white-space: nowrap;"><?= date('M d, Y g:i A', strtotime($log['created_at'])) ?></td>
-                  </tr>
-                <?php endforeach; ?>
-              <?php endif; ?>
-            </tbody>
-          </table>
-        </div>
-      <?php endif; ?>
-
-      <?php if ($active_log_tab === 'all_logs' || $active_log_tab === 'project_logs'): ?>
-        <div style="margin-bottom: 1rem;">
-          <div style="font-weight: 800; font-size: 0.78rem; color: var(--primary); margin-bottom: 0.35rem; text-transform: uppercase;">
-            B. Program &amp; Project Activity Logs (<?= count($report_project_logs) ?>)
-          </div>
-          <table class="official-table">
-            <thead>
-              <tr>
-                <?php if ($selected_org_id === 0): ?><th>Org</th><?php endif; ?>
-                <th>Project Title</th>
-                <th>Action</th>
-                <th>Logged By</th>
-                <th>Activity &amp; Progress Details</th>
-                <th>Timestamp</th>
-              </tr>
-            </thead>
-            <tbody>
-              <?php if (empty($report_project_logs)): ?>
-                <tr><td colspan="<?= $selected_org_id === 0 ? '6' : '5' ?>" style="text-align: center; color: var(--gray-500);">No project activity logs for the selected period.</td></tr>
-              <?php else: ?>
-                <?php foreach ($report_project_logs as $log): ?>
-                  <tr>
-                    <?php if ($selected_org_id === 0): ?><td><strong><?= htmlspecialchars($log['org_acronym'] ?? 'ORG') ?></strong></td><?php endif; ?>
-                    <td><strong><?= htmlspecialchars($log['project_title'] ?? ('Project #' . $log['project_id'])) ?></strong></td>
-                    <td><span class="status-pill status-inprogress"><?= htmlspecialchars($log['action_type']) ?></span></td>
-                    <td><strong><?= htmlspecialchars($log['user_name']) ?></strong> <span style="color:var(--gray-500);">(<?= htmlspecialchars($log['user_role']) ?>)</span></td>
-                    <td><?= htmlspecialchars($log['log_details']) ?></td>
-                    <td style="white-space: nowrap;"><?= date('M d, Y g:i A', strtotime($log['created_at'])) ?></td>
-                  </tr>
-                <?php endforeach; ?>
-              <?php endif; ?>
-            </tbody>
-          </table>
-        </div>
-      <?php endif; ?>
-
-      <?php if ($active_log_tab === 'all_logs' || $active_log_tab === 'acc_logs'): ?>
-        <div style="margin-bottom: 1rem;">
-          <div style="font-weight: 800; font-size: 0.78rem; color: var(--primary); margin-bottom: 0.35rem; text-transform: uppercase;">
-            C. Accomplishment Activity Logs (<?= count($report_acc_logs) ?>)
-          </div>
-          <table class="official-table">
-            <thead>
-              <tr>
-                <?php if ($selected_org_id === 0): ?><th>Org</th><?php endif; ?>
-                <th>Accomplishment Title</th>
-                <th>Action</th>
-                <th>Logged By</th>
-                <th>Activity &amp; Document Details</th>
-                <th>Timestamp</th>
-              </tr>
-            </thead>
-            <tbody>
-              <?php if (empty($report_acc_logs)): ?>
-                <tr><td colspan="<?= $selected_org_id === 0 ? '6' : '5' ?>" style="text-align: center; color: var(--gray-500);">No accomplishment activity logs for the selected period.</td></tr>
-              <?php else: ?>
-                <?php foreach ($report_acc_logs as $log): ?>
-                  <tr>
-                    <?php if ($selected_org_id === 0): ?><td><strong><?= htmlspecialchars($log['org_acronym'] ?? 'ORG') ?></strong></td><?php endif; ?>
-                    <td><strong><?= htmlspecialchars($log['acc_title'] ?? ('Accomplishment #' . $log['acc_id'])) ?></strong></td>
-                    <td><span class="status-pill status-accomplished"><?= htmlspecialchars($log['action_type']) ?></span></td>
-                    <td><strong><?= htmlspecialchars($log['user_name']) ?></strong> <span style="color:var(--gray-500);">(<?= htmlspecialchars($log['user_role']) ?>)</span></td>
-                    <td><?= htmlspecialchars($log['log_details']) ?></td>
-                    <td style="white-space: nowrap;"><?= date('M d, Y g:i A', strtotime($log['created_at'])) ?></td>
-                  </tr>
-                <?php endforeach; ?>
-              <?php endif; ?>
-            </tbody>
-          </table>
-        </div>
-      <?php endif; ?>
-
-      <?php if ($active_log_tab === 'all_logs' || $active_log_tab === 'student_logs'): ?>
-        <div>
-          <div style="font-weight: 800; font-size: 0.78rem; color: var(--primary); margin-bottom: 0.35rem; text-transform: uppercase;">
-            D. Student Account Approval &amp; Status Logs (<?= count($report_student_logs) ?>)
-          </div>
-          <table class="official-table">
-            <thead>
-              <tr>
-                <th>Student Name &amp; LRN</th>
-                <th>Action</th>
-                <th>Status Transition</th>
-                <th>Processed By</th>
-                <th>Audit Details</th>
-                <th>Timestamp</th>
-              </tr>
-            </thead>
-            <tbody>
-              <?php if (empty($report_student_logs)): ?>
-                <tr><td colspan="6" style="text-align: center; color: var(--gray-500);">No student account status logs for the selected period.</td></tr>
-              <?php else: ?>
-                <?php foreach ($report_student_logs as $slog):
-                  $st_cls = $slog['new_status'] === 'Approved' ? 'status-accomplished' : ($slog['new_status'] === 'Pending' ? 'status-todo' : 'status-overdue');
-                ?>
-                  <tr>
-                    <td>
-                      <strong><?= htmlspecialchars($slog['student_name']) ?></strong>
-                      <div style="font-size: 0.7rem; color: var(--gray-600);">LRN: <?= htmlspecialchars($slog['student_lrn']) ?></div>
-                    </td>
-                    <td><strong><?= htmlspecialchars($slog['action_type']) ?></strong></td>
-                    <td style="white-space: nowrap;">
-                      <?php if (!empty($slog['previous_status'])): ?>
-                        <span class="status-pill status-neutral"><?= htmlspecialchars($slog['previous_status']) ?></span> &rarr;
-                      <?php endif; ?>
-                      <span class="status-pill <?= $st_cls ?>"><?= htmlspecialchars($slog['new_status']) ?></span>
-                    </td>
-                    <td><strong><?= htmlspecialchars($slog['user_name']) ?></strong> <span style="color:var(--gray-500);">(<?= htmlspecialchars($slog['user_role']) ?>)</span></td>
-                    <td><?= htmlspecialchars($slog['log_details']) ?></td>
-                    <td style="white-space: nowrap;"><?= date('M d, Y g:i A', strtotime($slog['created_at'])) ?></td>
-                  </tr>
-                <?php endforeach; ?>
-              <?php endif; ?>
-            </tbody>
-          </table>
-        </div>
-      <?php endif; ?>
-    </div>
-
     <!-- Official Certification Statement -->
     <div class="certification-box" contenteditable="true" title="Click to customize certification text">
-      <strong>CERTIFICATION:</strong> I hereby certify that the leadership performance indicators, task monitoring records, program delivery milestones, verified accomplishments, and audit trail logs presented in this official report are true, accurate, and generated directly from the official records of <strong>Hear2Lead</strong> for <strong><?= htmlspecialchars($active_org_name) ?></strong> covering the period <strong><?= htmlspecialchars($period_label) ?></strong>.
+      <strong>CERTIFICATION:</strong> I hereby certify that the leadership performance indicators, task monitoring records, program delivery milestones, and verified accomplishments presented in this official report are true, accurate, and generated directly from the official records of <strong>Hear2Lead</strong> for <strong><?= htmlspecialchars($active_org_name) ?></strong> covering the period <strong><?= htmlspecialchars($period_label) ?></strong>.
     </div>
 
     <!-- Signatories Block (Editable inline before printing) -->

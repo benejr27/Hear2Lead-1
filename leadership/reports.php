@@ -6,6 +6,8 @@ require_once __DIR__ . '/../includes/auth_check.php';
 $current_role = $_SESSION['user_role'] ?? 'Officer';
 $role_perms = getRolePermissions($current_role, $pdo);
 $is_admin = !empty($role_perms['is_admin']);
+$is_pres_or_vp = !empty($role_perms['is_pres_or_vp']) || in_array(strtolower(trim($current_role)), ['president', 'vice president', 'leader'], true);
+$can_view_audit_logs = $is_admin || $is_pres_or_vp;
 if (empty($role_perms['can_view_reports'])) {
     header("Location: dashboard.php?error=" . urlencode("Access denied. Your role ($current_role) does not have access to Performance Reports."));
     exit;
@@ -17,8 +19,9 @@ $selected_org_id = $is_admin ? (isset($_GET['org_id']) ? intval($_GET['org_id'])
 $filter_date = trim($_GET['filter_date'] ?? '');
 $date_from = trim($_GET['date_from'] ?? '');
 $date_to = trim($_GET['date_to'] ?? '');
+$allowed_log_tabs = $is_admin ? ['task_logs', 'project_logs', 'acc_logs', 'student_logs'] : ['task_logs', 'project_logs', 'acc_logs'];
 $active_log_tab = $_GET['log_tab'] ?? 'task_logs';
-if (!in_array($active_log_tab, ['task_logs', 'project_logs', 'acc_logs', 'student_logs'], true)) {
+if (!in_array($active_log_tab, $allowed_log_tabs, true)) {
     $active_log_tab = 'task_logs';
 }
 
@@ -233,114 +236,126 @@ $stmt->execute($proj_params);
 $projects_list = $stmt->fetchAll();
 
 // ----------------------------------------------------
-// 4. Activity Logs for Tab Panel (Tasks, Projects, Accomplishments)
+// 4. Activity Logs for Tab Panel (Tasks, Projects, Accomplishments, and Admin-only Student Status)
 // ----------------------------------------------------
-// 4a. Task Logs
-$tl_conds = ["1=1"];
-$tl_params = [];
-if ($selected_org_id > 0) {
-    $tl_conds[] = "t.org_id = ?";
-    $tl_params[] = $selected_org_id;
-}
-if (!empty($filter_date)) {
-    $tl_conds[] = "DATE(tl.created_at) = ?";
-    $tl_params[] = $filter_date;
-}
-if (!empty($date_from)) {
-    $tl_conds[] = "DATE(tl.created_at) >= ?";
-    $tl_params[] = $date_from;
-}
-if (!empty($date_to)) {
-    $tl_conds[] = "DATE(tl.created_at) <= ?";
-    $tl_params[] = $date_to;
-}
-$tl_where = implode(" AND ", $tl_conds);
-$stmt_tl = $pdo->prepare("SELECT tl.*, t.title as task_title, t.assigned_to, t.status as task_status, o.acronym as org_acronym
-                          FROM task_logs tl
-                          JOIN tasks t ON tl.task_id = t.id
-                          LEFT JOIN organizations o ON t.org_id = o.id
-                          WHERE $tl_where
-                          ORDER BY tl.created_at DESC, tl.id DESC");
-$stmt_tl->execute($tl_params);
-$report_task_logs = $stmt_tl->fetchAll();
+$report_task_logs = [];
+$report_project_logs = [];
+$report_acc_logs = [];
+$report_student_logs = [];
 
-// 4b. Project Logs
-$pl_conds = ["1=1"];
-$pl_params = [];
-if ($selected_org_id > 0) {
-    $pl_conds[] = "p.org_id = ?";
-    $pl_params[] = $selected_org_id;
-}
-if (!empty($filter_date)) {
-    $pl_conds[] = "DATE(pl.created_at) = ?";
-    $pl_params[] = $filter_date;
-}
-if (!empty($date_from)) {
-    $pl_conds[] = "DATE(pl.created_at) >= ?";
-    $pl_params[] = $date_from;
-}
-if (!empty($date_to)) {
-    $pl_conds[] = "DATE(pl.created_at) <= ?";
-    $pl_params[] = $date_to;
-}
-$pl_where = implode(" AND ", $pl_conds);
-$stmt_pl = $pdo->prepare("SELECT pl.*, p.title as project_title, p.progress_percent, p.status as project_status, o.acronym as org_acronym
-                          FROM project_logs pl
-                          JOIN projects p ON pl.project_id = p.id
-                          LEFT JOIN organizations o ON p.org_id = o.id
-                          WHERE $pl_where
-                          ORDER BY pl.created_at DESC, pl.id DESC");
-$stmt_pl->execute($pl_params);
-$report_project_logs = $stmt_pl->fetchAll();
+if ($can_view_audit_logs) {
+    // Admin can filter by selected org (or all orgs if 0); President/Vice President strictly see their own organization only
+    $log_org_id = $is_admin ? $selected_org_id : $current_org_id;
 
-// 4c. Accomplishment Logs
-$al_conds = ["1=1"];
-$al_params = [];
-if ($selected_org_id > 0) {
-    $al_conds[] = "a.org_id = ?";
-    $al_params[] = $selected_org_id;
-}
-if (!empty($filter_date)) {
-    $al_conds[] = "DATE(al.created_at) = ?";
-    $al_params[] = $filter_date;
-}
-if (!empty($date_from)) {
-    $al_conds[] = "DATE(al.created_at) >= ?";
-    $al_params[] = $date_from;
-}
-if (!empty($date_to)) {
-    $al_conds[] = "DATE(al.created_at) <= ?";
-    $al_params[] = $date_to;
-}
-$al_where = implode(" AND ", $al_conds);
-$stmt_al = $pdo->prepare("SELECT al.*, a.title as acc_title, a.badge_tag, a.date_accomplished, o.acronym as org_acronym
-                          FROM accomplishment_logs al
-                          JOIN accomplishments a ON al.acc_id = a.id
-                          LEFT JOIN organizations o ON a.org_id = o.id
-                          WHERE $al_where
-                          ORDER BY al.created_at DESC, al.id DESC");
-$stmt_al->execute($al_params);
-$report_acc_logs = $stmt_al->fetchAll();
+    // 4a. Task Logs
+    $tl_conds = ["1=1"];
+    $tl_params = [];
+    if (!$is_admin || $log_org_id > 0) {
+        $tl_conds[] = "t.org_id = ?";
+        $tl_params[] = $log_org_id;
+    }
+    if (!empty($filter_date)) {
+        $tl_conds[] = "DATE(tl.created_at) = ?";
+        $tl_params[] = $filter_date;
+    }
+    if (!empty($date_from)) {
+        $tl_conds[] = "DATE(tl.created_at) >= ?";
+        $tl_params[] = $date_from;
+    }
+    if (!empty($date_to)) {
+        $tl_conds[] = "DATE(tl.created_at) <= ?";
+        $tl_params[] = $date_to;
+    }
+    $tl_where = implode(" AND ", $tl_conds);
+    $stmt_tl = $pdo->prepare("SELECT tl.*, t.title as task_title, t.assigned_to, t.status as task_status, o.acronym as org_acronym
+                              FROM task_logs tl
+                              JOIN tasks t ON tl.task_id = t.id
+                              LEFT JOIN organizations o ON t.org_id = o.id
+                              WHERE $tl_where
+                              ORDER BY tl.created_at DESC, tl.id DESC");
+    $stmt_tl->execute($tl_params);
+    $report_task_logs = $stmt_tl->fetchAll();
 
-// 4d. Student Account Status Logs
-$sl_conds = ["1=1"];
-$sl_params = [];
-if (!empty($filter_date)) {
-    $sl_conds[] = "DATE(sl.created_at) = ?";
-    $sl_params[] = $filter_date;
+    // 4b. Project Logs
+    $pl_conds = ["1=1"];
+    $pl_params = [];
+    if (!$is_admin || $log_org_id > 0) {
+        $pl_conds[] = "p.org_id = ?";
+        $pl_params[] = $log_org_id;
+    }
+    if (!empty($filter_date)) {
+        $pl_conds[] = "DATE(pl.created_at) = ?";
+        $pl_params[] = $filter_date;
+    }
+    if (!empty($date_from)) {
+        $pl_conds[] = "DATE(pl.created_at) >= ?";
+        $pl_params[] = $date_from;
+    }
+    if (!empty($date_to)) {
+        $pl_conds[] = "DATE(pl.created_at) <= ?";
+        $pl_params[] = $date_to;
+    }
+    $pl_where = implode(" AND ", $pl_conds);
+    $stmt_pl = $pdo->prepare("SELECT pl.*, p.title as project_title, p.progress_percent, p.status as project_status, o.acronym as org_acronym
+                              FROM project_logs pl
+                              JOIN projects p ON pl.project_id = p.id
+                              LEFT JOIN organizations o ON p.org_id = o.id
+                              WHERE $pl_where
+                              ORDER BY pl.created_at DESC, pl.id DESC");
+    $stmt_pl->execute($pl_params);
+    $report_project_logs = $stmt_pl->fetchAll();
+
+    // 4c. Accomplishment Logs
+    $al_conds = ["1=1"];
+    $al_params = [];
+    if (!$is_admin || $log_org_id > 0) {
+        $al_conds[] = "a.org_id = ?";
+        $al_params[] = $log_org_id;
+    }
+    if (!empty($filter_date)) {
+        $al_conds[] = "DATE(al.created_at) = ?";
+        $al_params[] = $filter_date;
+    }
+    if (!empty($date_from)) {
+        $al_conds[] = "DATE(al.created_at) >= ?";
+        $al_params[] = $date_from;
+    }
+    if (!empty($date_to)) {
+        $al_conds[] = "DATE(al.created_at) <= ?";
+        $al_params[] = $date_to;
+    }
+    $al_where = implode(" AND ", $al_conds);
+    $stmt_al = $pdo->prepare("SELECT al.*, a.title as acc_title, a.badge_tag, a.date_accomplished, o.acronym as org_acronym
+                              FROM accomplishment_logs al
+                              JOIN accomplishments a ON al.acc_id = a.id
+                              LEFT JOIN organizations o ON a.org_id = o.id
+                              WHERE $al_where
+                              ORDER BY al.created_at DESC, al.id DESC");
+    $stmt_al->execute($al_params);
+    $report_acc_logs = $stmt_al->fetchAll();
+
+    // 4d. Student Account Status Logs (Admin ONLY)
+    if ($is_admin) {
+        $sl_conds = ["1=1"];
+        $sl_params = [];
+        if (!empty($filter_date)) {
+            $sl_conds[] = "DATE(sl.created_at) = ?";
+            $sl_params[] = $filter_date;
+        }
+        if (!empty($date_from)) {
+            $sl_conds[] = "DATE(sl.created_at) >= ?";
+            $sl_params[] = $date_from;
+        }
+        if (!empty($date_to)) {
+            $sl_conds[] = "DATE(sl.created_at) <= ?";
+            $sl_params[] = $date_to;
+        }
+        $sl_where = implode(" AND ", $sl_conds);
+        $stmt_sl = $pdo->prepare("SELECT sl.* FROM student_logs sl WHERE $sl_where ORDER BY sl.created_at DESC, sl.id DESC");
+        $stmt_sl->execute($sl_params);
+        $report_student_logs = $stmt_sl->fetchAll();
+    }
 }
-if (!empty($date_from)) {
-    $sl_conds[] = "DATE(sl.created_at) >= ?";
-    $sl_params[] = $date_from;
-}
-if (!empty($date_to)) {
-    $sl_conds[] = "DATE(sl.created_at) <= ?";
-    $sl_params[] = $date_to;
-}
-$sl_where = implode(" AND ", $sl_conds);
-$stmt_sl = $pdo->prepare("SELECT sl.* FROM student_logs sl WHERE $sl_where ORDER BY sl.created_at DESC, sl.id DESC");
-$stmt_sl->execute($sl_params);
-$report_student_logs = $stmt_sl->fetchAll();
 
 // Format human-readable period label
 $period_label = 'All Time';
@@ -617,12 +632,13 @@ include_once __DIR__ . '/../includes/header.php';
   </div>
 </div>
 
-<!-- Section 3: Activity & Audit Logs Tab Panel (Tasks, Projects, Accomplishments) -->
-<div class="panel">
+<!-- Section 3: Activity & Audit Logs Tab Panel (Screen Only - Excluded from Print) -->
+<?php if ($can_view_audit_logs): ?>
+<div class="panel no-print">
   <div class="panel-header" style="border-bottom: none; padding-bottom: 0.25rem; margin-bottom: 0.75rem;">
-    <span><i class="fa-solid fa-clock-rotate-left" style="color: var(--primary);"></i> Activity & Audit Logs (Tasks, Projects, Accomplishments & Student Status)</span>
+    <span><i class="fa-solid fa-clock-rotate-left" style="color: var(--primary);"></i> Activity & Audit Logs (<?= $is_admin ? 'Tasks, Projects, Accomplishments & Student Status' : 'Tasks, Projects & Accomplishments — ' . htmlspecialchars($active_org_acronym) ?>)</span>
     <span style="font-size: 0.85rem; color: var(--gray-500);">
-      <?= count($report_task_logs) + count($report_project_logs) + count($report_acc_logs) + count($report_student_logs) ?> Total Logged Actions
+      <?= count($report_task_logs) + count($report_project_logs) + count($report_acc_logs) + ($is_admin ? count($report_student_logs) : 0) ?> Total Logged Actions
     </span>
   </div>
 
@@ -643,11 +659,13 @@ include_once __DIR__ . '/../includes/header.php';
       <span>Accomplishment Logs</span>
       <span class="user-tab-badge"><?= count($report_acc_logs) ?></span>
     </button>
+    <?php if ($is_admin): ?>
     <button type="button" class="user-tab-btn <?= $active_log_tab === 'student_logs' ? 'active' : '' ?>" onclick="switchReportLogTab('student_logs')">
       <i class="fa-solid fa-graduation-cap"></i>
       <span>Student Status Logs</span>
       <span class="user-tab-badge"><?= count($report_student_logs) ?></span>
     </button>
+    <?php endif; ?>
   </div>
 
   <!-- TAB 1: Task Logs -->
@@ -794,7 +812,8 @@ include_once __DIR__ . '/../includes/header.php';
     <?php endif; ?>
   </div>
 
-  <!-- TAB 4: Student Account Status Logs -->
+  <?php if ($is_admin): ?>
+  <!-- TAB 4: Student Account Status Logs (Admin Only) -->
   <div class="user-tab-pane <?= $active_log_tab === 'student_logs' ? 'active' : '' ?>" id="report-tab-student_logs">
     <?php if (empty($report_student_logs)): ?>
       <div style="text-align: center; padding: 2.25rem; color: var(--gray-500);">
@@ -849,7 +868,9 @@ include_once __DIR__ . '/../includes/header.php';
       </div>
     <?php endif; ?>
   </div>
+  <?php endif; ?>
 </div>
+<?php endif; ?>
 
 <!-- Sign-off Block for Print / Official Submission -->
 <div class="print-signatures">
@@ -889,12 +910,10 @@ function openOfficialReportTemplate(autoPrint) {
     const dateEl = form.querySelector('[name="filter_date"]');
     const fromEl = form.querySelector('[name="date_from"]');
     const toEl = form.querySelector('[name="date_to"]');
-    const logTabEl = document.getElementById('reportLogTabInput');
     if (orgEl && orgEl.value !== '') params.set('org_id', orgEl.value);
     if (dateEl && dateEl.value !== '') params.set('filter_date', dateEl.value);
     if (fromEl && fromEl.value !== '') params.set('date_from', fromEl.value);
     if (toEl && toEl.value !== '') params.set('date_to', toEl.value);
-    if (logTabEl && logTabEl.value !== '') params.set('log_tab', logTabEl.value);
   }
   if (autoPrint) params.set('auto_print', '1');
   window.location.href = 'print_report.php?' + params.toString();

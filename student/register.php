@@ -1,6 +1,7 @@
 <?php
 // student/register.php - Student Registration Handler (Modal POST & Redirect Guard with CAPTCHA, Strong Passwords, Unique LRN & Admin Approval)
 require_once __DIR__ . '/../config/db.php';
+$pdo = getDBConnection();
 
 // If already logged in, redirect directly to portal
 if (isset($_SESSION['student_id'])) {
@@ -30,14 +31,21 @@ $password = $_POST['password'] ?? '';
 $confirm_password = $_POST['confirm_password'] ?? '';
 $captcha_input = trim($_POST['captcha'] ?? '');
 $expected_captcha = $_SESSION['student_reg_captcha'] ?? '';
+$is_captcha_valid = function_exists('verifyCaptchaCode')
+    ? verifyCaptchaCode($captcha_input)
+    : (!empty($expected_captcha) && !empty($captcha_input) && strtoupper($captcha_input) === strtoupper($expected_captcha));
 
 $error = '';
 
 // 1. CAPTCHA Validation
-if (empty($expected_captcha) || empty($captcha_input) || strtoupper($captcha_input) !== strtoupper($expected_captcha)) {
+if (!$is_captcha_valid) {
     $error = "Invalid or expired CAPTCHA code. Please re-enter the characters shown in the security image.";
     // Reset captcha on failure to prevent brute forcing
-    unset($_SESSION['student_reg_captcha']);
+    if (function_exists('clearCaptchaCode')) {
+        clearCaptchaCode();
+    } else {
+        unset($_SESSION['student_reg_captcha']);
+    }
 } elseif (empty($student_lrn) || empty($full_name) || empty($grade_section) || empty($password)) {
     $error = "Please fill in all required fields (Student LRN, Full Name, Grade & Section, and Password).";
 } elseif (strlen($student_lrn) < 3) {
@@ -96,7 +104,11 @@ if (empty($expected_captcha) || empty($captcha_input) || strtoupper($captcha_inp
                         recordStudentAccountLog($new_student_id, $student_lrn, $full_name, null, $full_name, "Student • {$grade_section}", 'Registered (Pending)', null, 'Pending', $log_msg, $pdo);
                     }
                     // Invalidate CAPTCHA after successful use
-                    unset($_SESSION['student_reg_captcha']);
+                    if (function_exists('clearCaptchaCode')) {
+                        clearCaptchaCode();
+                    } else {
+                        unset($_SESSION['student_reg_captcha']);
+                    }
 
                     // DO NOT log the student in automatically.
                     // Account requires Administrator approval before activation.
@@ -115,7 +127,11 @@ if (empty($expected_captcha) || empty($captcha_input) || strtoupper($captcha_inp
 
 // On error, redirect back to modal with error and sticky inputs
 // Invalidate CAPTCHA so fresh one is needed
-unset($_SESSION['student_reg_captcha']);
+if (function_exists('clearCaptchaCode')) {
+    clearCaptchaCode();
+} else {
+    unset($_SESSION['student_reg_captcha']);
+}
 
 $redir = !empty($_POST['redirect_error']) ? $_POST['redirect_error'] : '../index.php';
 $parts = explode('?', $redir);

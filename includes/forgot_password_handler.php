@@ -1,8 +1,5 @@
 <?php
 // includes/forgot_password_handler.php - Password Reset Ticket Submission Handler
-if (session_status() === PHP_SESSION_NONE) {
-    session_start();
-}
 require_once __DIR__ . '/../config/db.php';
 
 $pdo = getDBConnection();
@@ -32,13 +29,19 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 
 // 1. CAPTCHA Verification
 $submitted_captcha = strtoupper(trim($_POST['captcha'] ?? ''));
-$stored_captcha = strtoupper(trim($_SESSION['captcha_code'] ?? ($_SESSION['student_reg_captcha'] ?? '')));
+$is_captcha_valid = function_exists('verifyCaptchaCode')
+    ? verifyCaptchaCode($submitted_captcha)
+    : (!empty($submitted_captcha) && $submitted_captcha === strtoupper(trim($_SESSION['captcha_code'] ?? ($_SESSION['student_reg_captcha'] ?? ''))));
 
-if (empty($submitted_captcha) || empty($stored_captcha) || $submitted_captcha !== $stored_captcha) {
+if (!$is_captcha_valid) {
     sendResponse(false, "Security CAPTCHA verification failed. Please enter the characters shown in the security image.");
 }
 // Clear captcha after successful validation
-unset($_SESSION['captcha_code'], $_SESSION['student_reg_captcha']);
+if (function_exists('clearCaptchaCode')) {
+    clearCaptchaCode();
+} else {
+    unset($_SESSION['captcha_code'], $_SESSION['student_reg_captcha']);
+}
 
 // 2. Validate Inputs
 $account_type = strtolower(trim($_POST['account_type'] ?? 'student'));

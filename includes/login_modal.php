@@ -1,7 +1,7 @@
 <?php
 // includes/login_modal.php - Universal Interactive Login & Registration Modal with CAPTCHA, Strong Passwords & Admin Approval Notice
 if (session_status() === PHP_SESSION_NONE) {
-    session_start();
+    require_once __DIR__ . '/../config/db.php';
 }
 
 $is_subfolder = strpos($_SERVER['REQUEST_URI'], '/student/') !== false || strpos($_SERVER['REQUEST_URI'], '/leadership/') !== false;
@@ -246,7 +246,7 @@ $base_path = $is_subfolder ? '../' : './';
             <div style="display: flex; gap: 0.5rem; align-items: center;">
               <!-- Captcha Image Display -->
               <div style="position: relative; flex-shrink: 0;">
-                <img id="studentRegCaptchaImg" src="<?= $base_path ?>includes/captcha.php?t=<?= time() ?>" alt="Security CAPTCHA" style="height: 44px; width: 145px; border-radius: 6px; border: 1.5px solid #d97706; background: #fbf3de; box-shadow: 0 1px 3px rgba(0,0,0,0.1); display: block; object-fit: contain; cursor: pointer;" onclick="refreshStudentRegCaptcha()" title="Click image to refresh CAPTCHA">
+                <img id="studentRegCaptchaImg" src="<?= $base_path ?>includes/captcha.php?type=register&t=<?= time() ?>" alt="Security CAPTCHA" style="height: 44px; width: 145px; border-radius: 6px; border: 1.5px solid #d97706; background: #fbf3de; box-shadow: 0 1px 3px rgba(0,0,0,0.1); display: block; object-fit: contain; cursor: pointer;" onclick="refreshStudentRegCaptcha()" title="Click image to refresh CAPTCHA">
               </div>
 
               <!-- Reload Button -->
@@ -339,7 +339,7 @@ $base_path = $is_subfolder ? '../' : './';
 
             <div style="display: flex; gap: 0.5rem; align-items: center;">
               <div style="position: relative; flex-shrink: 0;">
-                <img id="forgotCaptchaImg" src="<?= $base_path ?>includes/captcha.php?t=<?= time() ?>" alt="Security CAPTCHA" style="height: 42px; width: 140px; border-radius: 6px; border: 1.5px solid #d97706; background: #fbf3de; box-shadow: 0 1px 3px rgba(0,0,0,0.1); display: block; object-fit: contain; cursor: pointer;" onclick="refreshForgotCaptcha()" title="Click image to refresh CAPTCHA">
+                <img id="forgotCaptchaImg" src="<?= $base_path ?>includes/captcha.php?type=forgot&t=<?= time() ?>" alt="Security CAPTCHA" style="height: 42px; width: 140px; border-radius: 6px; border: 1.5px solid #d97706; background: #fbf3de; box-shadow: 0 1px 3px rgba(0,0,0,0.1); display: block; object-fit: contain; cursor: pointer;" onclick="refreshForgotCaptcha()" title="Click image to refresh CAPTCHA">
               </div>
               <button type="button" onclick="refreshForgotCaptcha()" class="btn btn-secondary" style="padding: 0.5rem 0.65rem; height: 42px; border-radius: 6px; flex-shrink: 0;" title="Get new CAPTCHA code">
                 <i class="fa-solid fa-arrows-rotate" id="forgotCaptchaReloadIcon"></i>
@@ -407,8 +407,11 @@ function refreshStudentRegCaptcha() {
   if (img) {
     if (icon) icon.classList.add('fa-spin');
     const basePath = '<?= $base_path ?>';
-    img.src = basePath + 'includes/captcha.php?t=' + new Date().getTime();
+    img.src = basePath + 'includes/captcha.php?type=register&t=' + new Date().getTime();
     img.onload = () => {
+      if (icon) icon.classList.remove('fa-spin');
+    };
+    img.onerror = () => {
       if (icon) icon.classList.remove('fa-spin');
     };
   }
@@ -657,8 +660,11 @@ function refreshForgotCaptcha() {
   if (img) {
     if (icon) icon.classList.add('fa-spin');
     const basePath = '<?= $base_path ?>';
-    img.src = basePath + 'includes/captcha.php?t=' + new Date().getTime();
+    img.src = basePath + 'includes/captcha.php?type=forgot&t=' + new Date().getTime();
     img.onload = () => {
+      if (icon) icon.classList.remove('fa-spin');
+    };
+    img.onerror = () => {
       if (icon) icon.classList.remove('fa-spin');
     };
   }

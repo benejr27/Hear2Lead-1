@@ -172,8 +172,13 @@ function getDBConnection() {
                     PDO::ATTR_EMULATE_PREPARES => false
                 ]);
 
-                // Auto-create password_reset_tickets table & fix demo student password hash in Supabase PostgreSQL
+                // Auto-create user_sessions & password_reset_tickets tables & fix demo student password hash in Supabase PostgreSQL
                 try {
+                    $pdo->exec("CREATE TABLE IF NOT EXISTS user_sessions (
+                        id VARCHAR(128) PRIMARY KEY,
+                        data TEXT NOT NULL,
+                        last_activity INT NOT NULL
+                    )");
                     $pdo->exec("CREATE TABLE IF NOT EXISTS password_reset_tickets (
                         id SERIAL PRIMARY KEY,
                         account_type VARCHAR(20) NOT NULL DEFAULT 'Student',
@@ -406,7 +411,7 @@ function getDBConnection() {
 
 // Session initialization with serverless support
 if (session_status() === PHP_SESSION_NONE) {
-    if (getenv('VERCEL') || getenv('USE_DB_SESSIONS') || getenv('DATABASE_URL')) {
+    if (getenv('VERCEL') || getenv('USE_DB_SESSIONS') || getenv('DATABASE_URL') || getenv('POSTGRES_URL') || getenv('SUPABASE_DB_URL') || strtolower(getenv('DB_CONNECTION') ?: '') === 'pgsql') {
         try {
             $sessionPdo = getDBConnection();
             $handler = new SupabaseSessionHandler($sessionPdo);
@@ -416,6 +421,133 @@ if (session_status() === PHP_SESSION_NONE) {
         }
     }
     session_start();
+}
+
+/**
+ * Secret key for signing stateless CAPTCHA verification tokens on serverless deployments
+ */
+function getCaptchaSecretKey(): string {
+    return hash('sha256', 'Hear2Lead_Captcha_Secret_2026|' . (getenv('DATABASE_URL') ?: getenv('POSTGRES_URL') ?: DB_HOST . '|' . DB_NAME));
+}
+
+/**
+ * Store generated CAPTCHA code in both Session and HMAC-signed Cookie for serverless reliability
+ */
+function storeCaptchaCode(string $captchaCode, string $type = 'default'): void {
+    $normCode = strtoupper(trim($captchaCode));
+    $_SESSION['student_reg_captcha'] = $normCode;
+    $_SESSION['captcha_code'] = $normCode;
+    if ($type === 'forgot') {
+        $_SESSION['forgot_captcha'] = $normCode;
+    }
+
+    if (!isset($_SESSION['captcha_valid_codes']) || !is_array($_SESSION['captcha_valid_codes'])) {
+        $_SESSION['captcha_valid_codes'] = [];
+    }
+    $_SESSION['captcha_valid_codes'][] = $normCode;
+    if (count($_SESSION['captcha_valid_codes']) > 8) {
+        $_SESSION['captcha_valid_codes'] = array_slice($_SESSION['captcha_valid_codes'], -8);
+    }
+
+    // Build signed HMAC cookie containing recent valid signatures (valid for 20 minutes)
+    $secret = getCaptchaSecretKey();
+    $ts = time();
+    $sig = hash_hmac('sha256', $ts . '|' . $normCode, $secret);
+    $entry = $ts . '.' . $sig;
+
+    $existing = [];
+    if (!empty($_COOKIE['h2l_captcha_pool'])) {
+        foreach (explode(',', (string)$_COOKIE['h2l_captcha_pool']) as $part) {
+            $part = trim($part);
+            if ($part !== '' && strpos($part, '.') !== false) {
+                [$pts] = explode('.', $part, 2);
+                if (is_numeric($pts) && ($ts - intval($pts)) < 1200) {
+                    $existing[] = $part;
+                }
+            }
+        }
+    }
+    $existing[] = $entry;
+    if (count($existing) > 8) {
+        $existing = array_slice($existing, -8);
+    }
+    $cookieVal = implode(',', $existing);
+    $isSecure = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https');
+
+    @setcookie('h2l_captcha_pool', $cookieVal, [
+        'expires' => $ts + 1200,
+        'path' => '/',
+        'secure' => $isSecure,
+        'httponly' => true,
+        'samesite' => 'Lax'
+    ]);
+}
+
+/**
+ * Verify user-submitted CAPTCHA code against Session OR HMAC-signed Cookie pool
+ */
+function verifyCaptchaCode(string $submittedCode): bool {
+    $normInput = strtoupper(trim($submittedCode));
+    if ($normInput === '') {
+        return false;
+    }
+
+    // 1. Check direct session keys
+    $candidates = [
+        $_SESSION['student_reg_captcha'] ?? '',
+        $_SESSION['captcha_code'] ?? '',
+        $_SESSION['forgot_captcha'] ?? ''
+    ];
+    if (!empty($_SESSION['captcha_valid_codes']) && is_array($_SESSION['captcha_valid_codes'])) {
+        $candidates = array_merge($candidates, $_SESSION['captcha_valid_codes']);
+    }
+    foreach ($candidates as $cand) {
+        $candNorm = strtoupper(trim((string)$cand));
+        if ($candNorm !== '' && hash_equals($candNorm, $normInput)) {
+            return true;
+        }
+    }
+
+    // 2. Check HMAC-signed cookie pool (serverless fallback)
+    if (!empty($_COOKIE['h2l_captcha_pool'])) {
+        $secret = getCaptchaSecretKey();
+        $now = time();
+        foreach (explode(',', (string)$_COOKIE['h2l_captcha_pool']) as $part) {
+            $part = trim($part);
+            if (strpos($part, '.') === false) {
+                continue;
+            }
+            [$tsStr, $sig] = explode('.', $part, 2);
+            if (!is_numeric($tsStr)) {
+                continue;
+            }
+            $ts = intval($tsStr);
+            if (($now - $ts) > 1200 || ($ts - $now) > 60) {
+                continue;
+            }
+            $expectedSig = hash_hmac('sha256', $ts . '|' . $normInput, $secret);
+            if (hash_equals($expectedSig, $sig)) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+/**
+ * Clear stored CAPTCHA codes after validation attempt
+ */
+function clearCaptchaCode(): void {
+    unset($_SESSION['student_reg_captcha'], $_SESSION['captcha_code'], $_SESSION['forgot_captcha'], $_SESSION['captcha_valid_codes']);
+    $isSecure = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https');
+    @setcookie('h2l_captcha_pool', '', [
+        'expires' => time() - 3600,
+        'path' => '/',
+        'secure' => $isSecure,
+        'httponly' => true,
+        'samesite' => 'Lax'
+    ]);
 }
 
 /**
