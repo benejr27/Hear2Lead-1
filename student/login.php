@@ -54,6 +54,10 @@ if (empty($identifier) || empty($password)) {
             $_SESSION['student_status'] = $student['status'];
             $_SESSION['login_logged'] = true;
 
+            if (function_exists('setStudentAuthCookie')) {
+                setStudentAuthCookie($_SESSION);
+            }
+
             if (function_exists('recordLoginNotification')) {
                 $role_lbl = !empty($student['grade_section']) ? "Student • {$student['grade_section']}" : 'Student';
                 $login_msg = "{$student['full_name']} (LRN: {$student['student_lrn']}) logged in to the Student Portal.";

@@ -46,6 +46,10 @@ if (empty($username) || empty($password)) {
         $_SESSION['org_acronym'] = $user['acronym'];
         $_SESSION['login_logged'] = true;
 
+        if (function_exists('setOfficerAuthCookie')) {
+            setOfficerAuthCookie($_SESSION);
+        }
+
         if (function_exists('recordLoginNotification')) {
             $login_msg = "{$user['full_name']} ({$user['role']}) logged in to the {$user['acronym']} Leadership Portal.";
             recordLoginNotification('Officer', intval($user['id']), intval($user['org_id']), $user['acronym'], $user['full_name'], $user['role'], $login_msg, $pdo);

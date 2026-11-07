@@ -37,6 +37,21 @@ class SupabaseCompatPDO extends PDO {
         $sql = str_replace('`', '', $sql);
         // Replace CURDATE() with CURRENT_DATE
         $sql = preg_replace('/\bCURDATE\(\)/i', 'CURRENT_DATE', $sql);
+        // Replace DATEDIFF(a, b) with (CAST(a AS DATE) - CAST(b AS DATE))
+        $sql = preg_replace('/\bDATEDIFF\s*\(\s*([^,]+?)\s*,\s*([^)]+?)\s*\)/i', '(CAST($1 AS DATE) - CAST($2 AS DATE))', $sql);
+        // Replace FIELD(t.priority, 'High', 'Medium', 'Low') with CASE expression
+        $sql = preg_replace(
+            "/\bFIELD\s*\(\s*([a-zA-Z0-9_.]+)\s*,\s*'High'\s*,\s*'Medium'\s*,\s*'Low'\s*\)/i",
+            "CASE $1 WHEN 'High' THEN 1 WHEN 'Medium' THEN 2 WHEN 'Low' THEN 3 ELSE 4 END",
+            $sql
+        );
+        // Replace CRC32(...) with ABS(hashtext(...)) for PostgreSQL compatibility in live_sync.php
+        $sql = preg_replace('/\bCRC32\s*\(/i', 'ABS(hashtext(', $sql);
+        $sql = str_replace('ABS(hashtext(CONCAT_WS(', 'ABS(hashtext(CONCAT_WS(', $sql);
+        // If CRC32 was replaced with ABS(hashtext(, close the extra parenthesis before ))
+        if (strpos($sql, 'ABS(hashtext(') !== false) {
+            $sql = preg_replace('/ABS\(hashtext\((CONCAT_WS\([^)]+\))\)\)/i', 'ABS(hashtext($1)::bigint)', $sql);
+        }
         // Replace INSERT IGNORE INTO
         if (preg_match('/^\s*INSERT\s+IGNORE\s+INTO\s+(.+)$/is', $sql, $m)) {
             $sql = "INSERT INTO " . $m[1] . " ON CONFLICT DO NOTHING";
@@ -69,6 +84,8 @@ class SupabaseCompatPDO extends PDO {
  */
 class SupabaseSessionHandler implements SessionHandlerInterface {
     private $pdo;
+    private bool $readFailed = false;
+    private bool $hadAuthSession = false;
 
     public function __construct($pdo) {
         $this->pdo = $pdo;
@@ -90,17 +107,31 @@ class SupabaseSessionHandler implements SessionHandlerInterface {
             $stmt = $this->pdo->prepare("SELECT data FROM user_sessions WHERE id = ?");
             $stmt->execute([$id]);
             $res = $stmt->fetchColumn();
-            return $res !== false ? (string)$res : '';
+            $str = $res !== false ? (string)$res : '';
+            if (strpos($str, 'user_id') !== false || strpos($str, 'student_id') !== false) {
+                $this->hadAuthSession = true;
+            }
+            return $str;
         } catch (Throwable $e) {
+            $this->readFailed = true;
             return '';
         }
     }
 
     #[\ReturnTypeWillChange]
     public function write($id, $data) {
+        $hasAuthNow = (strpos($data, 'user_id') !== false || strpos($data, 'student_id') !== false);
+        // Never overwrite an existing session in DB if read() failed due to transient DB hiccup and current session has no auth data
+        if ($this->readFailed && !$hasAuthNow) {
+            return true;
+        }
         try {
-            // PostgreSQL upsert
-            $stmt = $this->pdo->prepare("INSERT INTO user_sessions (id, data, last_activity) VALUES (?, ?, ?) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, last_activity = EXCLUDED.last_activity");
+            // PostgreSQL upsert: if current write has no auth data, preserve existing DB data if existing DB row has user_id/student_id unless explicitly destroyed
+            if (!$hasAuthNow && !$this->hadAuthSession) {
+                $stmt = $this->pdo->prepare("INSERT INTO user_sessions (id, data, last_activity) VALUES (?, ?, ?) ON CONFLICT (id) DO UPDATE SET data = CASE WHEN user_sessions.data LIKE '%user_id%' OR user_sessions.data LIKE '%student_id%' THEN user_sessions.data ELSE EXCLUDED.data END, last_activity = EXCLUDED.last_activity");
+            } else {
+                $stmt = $this->pdo->prepare("INSERT INTO user_sessions (id, data, last_activity) VALUES (?, ?, ?) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, last_activity = EXCLUDED.last_activity");
+            }
             return $stmt->execute([$id, $data, time()]);
         } catch (Throwable $e) {
             try {
@@ -410,7 +441,15 @@ function getDBConnection() {
 }
 
 // Session initialization with serverless support
-if (session_status() === PHP_SESSION_NONE) {
+if (session_status() === PHP_SESSION_NONE && !defined('H2L_SKIP_DB_SESSION')) {
+    $isSecureReq = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https');
+    @session_set_cookie_params([
+        'lifetime' => 86400 * 7,
+        'path' => '/',
+        'secure' => $isSecureReq,
+        'httponly' => true,
+        'samesite' => 'Lax'
+    ]);
     if (getenv('VERCEL') || getenv('USE_DB_SESSIONS') || getenv('DATABASE_URL') || getenv('POSTGRES_URL') || getenv('SUPABASE_DB_URL') || strtolower(getenv('DB_CONNECTION') ?: '') === 'pgsql') {
         try {
             $sessionPdo = getDBConnection();
@@ -424,11 +463,156 @@ if (session_status() === PHP_SESSION_NONE) {
 }
 
 /**
- * Secret key for signing stateless CAPTCHA verification tokens on serverless deployments
+ * Secret key for signing stateless CAPTCHA & Auth backup tokens on serverless deployments
  */
 function getCaptchaSecretKey(): string {
     return hash('sha256', 'Hear2Lead_Captcha_Secret_2026|' . (getenv('DATABASE_URL') ?: getenv('POSTGRES_URL') ?: DB_HOST . '|' . DB_NAME));
 }
+
+/**
+ * Set HMAC-signed Officer/Admin authentication backup cookie for serverless session persistence
+ */
+function setOfficerAuthCookie(array $userData): void {
+    $payload = [
+        'user_id' => intval($userData['user_id'] ?? ($userData['id'] ?? 0)),
+        'user_name' => (string)($userData['user_name'] ?? ($userData['full_name'] ?? '')),
+        'user_role' => (string)($userData['user_role'] ?? ($userData['role'] ?? 'Officer')),
+        'org_id' => intval($userData['org_id'] ?? 0),
+        'org_name' => (string)($userData['org_name'] ?? ''),
+        'org_acronym' => (string)($userData['org_acronym'] ?? ($userData['acronym'] ?? '')),
+        'exp' => time() + (86400 * 7)
+    ];
+    if ($payload['user_id'] <= 0) {
+        return;
+    }
+    $b64 = rtrim(strtr(base64_encode(json_encode($payload)), '+/', '-_'), '=');
+    $sig = hash_hmac('sha256', $b64, getCaptchaSecretKey());
+    $token = $b64 . '.' . $sig;
+    $isSecure = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https');
+    @setcookie('h2l_officer_auth', $token, [
+        'expires' => $payload['exp'],
+        'path' => '/',
+        'secure' => $isSecure,
+        'httponly' => true,
+        'samesite' => 'Lax'
+    ]);
+}
+
+/**
+ * Clear Officer/Admin authentication backup cookie on logout
+ */
+function clearOfficerAuthCookie(): void {
+    unset($_COOKIE['h2l_officer_auth']);
+    $isSecure = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https');
+    @setcookie('h2l_officer_auth', '', [
+        'expires' => time() - 3600,
+        'path' => '/',
+        'secure' => $isSecure,
+        'httponly' => true,
+        'samesite' => 'Lax'
+    ]);
+}
+
+/**
+ * Set HMAC-signed Student authentication backup cookie for serverless session persistence
+ */
+function setStudentAuthCookie(array $studentData): void {
+    $payload = [
+        'student_id' => intval($studentData['student_id'] ?? ($studentData['id'] ?? 0)),
+        'student_lrn' => (string)($studentData['student_lrn'] ?? ''),
+        'student_name' => (string)($studentData['student_name'] ?? ($studentData['full_name'] ?? '')),
+        'student_grade_section' => (string)($studentData['student_grade_section'] ?? ($studentData['grade_section'] ?? '')),
+        'student_email' => (string)($studentData['student_email'] ?? ($studentData['email'] ?? '')),
+        'student_status' => (string)($studentData['student_status'] ?? ($studentData['status'] ?? 'Approved')),
+        'exp' => time() + (86400 * 7)
+    ];
+    if ($payload['student_id'] <= 0) {
+        return;
+    }
+    $b64 = rtrim(strtr(base64_encode(json_encode($payload)), '+/', '-_'), '=');
+    $sig = hash_hmac('sha256', $b64, getCaptchaSecretKey());
+    $token = $b64 . '.' . $sig;
+    $isSecure = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https');
+    @setcookie('h2l_student_auth', $token, [
+        'expires' => $payload['exp'],
+        'path' => '/',
+        'secure' => $isSecure,
+        'httponly' => true,
+        'samesite' => 'Lax'
+    ]);
+}
+
+/**
+ * Clear Student authentication backup cookie on logout
+ */
+function clearStudentAuthCookie(): void {
+    unset($_COOKIE['h2l_student_auth']);
+    $isSecure = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https');
+    @setcookie('h2l_student_auth', '', [
+        'expires' => time() - 3600,
+        'path' => '/',
+        'secure' => $isSecure,
+        'httponly' => true,
+        'samesite' => 'Lax'
+    ]);
+}
+
+/**
+ * Automatically restore Officer/Admin or Student session from HMAC-signed backup cookie if serverless session was dropped
+ */
+function restoreAuthSessionFromCookie(): void {
+    if (session_status() !== PHP_SESSION_ACTIVE) {
+        return;
+    }
+    $secret = getCaptchaSecretKey();
+    if (!isset($_SESSION['user_id']) && !empty($_COOKIE['h2l_officer_auth'])) {
+        $parts = explode('.', (string)$_COOKIE['h2l_officer_auth'], 2);
+        if (count($parts) === 2) {
+            [$b64, $sig] = $parts;
+            $expected = hash_hmac('sha256', $b64, $secret);
+            if (hash_equals($expected, $sig)) {
+                $json = base64_decode(strtr($b64, '-_', '+/'), true);
+                $data = $json ? json_decode($json, true) : null;
+                if (is_array($data) && !empty($data['user_id']) && intval($data['exp'] ?? 0) > time()) {
+                    $_SESSION['user_id'] = intval($data['user_id']);
+                    $_SESSION['user_name'] = (string)($data['user_name'] ?? 'Officer');
+                    $_SESSION['user_role'] = (string)($data['user_role'] ?? 'Officer');
+                    $_SESSION['org_id'] = intval($data['org_id'] ?? 1);
+                    $_SESSION['org_name'] = (string)($data['org_name'] ?? 'Organization');
+                    $_SESSION['org_acronym'] = (string)($data['org_acronym'] ?? 'ORG');
+                    $_SESSION['login_logged'] = true;
+                }
+            }
+        }
+    } elseif (isset($_SESSION['user_id']) && empty($_COOKIE['h2l_officer_auth']) && !headers_sent()) {
+        setOfficerAuthCookie($_SESSION);
+    }
+
+    if (!isset($_SESSION['student_id']) && !isset($_SESSION['user_id']) && !empty($_COOKIE['h2l_student_auth'])) {
+        $parts = explode('.', (string)$_COOKIE['h2l_student_auth'], 2);
+        if (count($parts) === 2) {
+            [$b64, $sig] = $parts;
+            $expected = hash_hmac('sha256', $b64, $secret);
+            if (hash_equals($expected, $sig)) {
+                $json = base64_decode(strtr($b64, '-_', '+/'), true);
+                $data = $json ? json_decode($json, true) : null;
+                if (is_array($data) && !empty($data['student_id']) && intval($data['exp'] ?? 0) > time()) {
+                    $_SESSION['student_id'] = intval($data['student_id']);
+                    $_SESSION['student_lrn'] = (string)($data['student_lrn'] ?? '');
+                    $_SESSION['student_name'] = (string)($data['student_name'] ?? 'Student');
+                    $_SESSION['student_grade_section'] = (string)($data['student_grade_section'] ?? '');
+                    $_SESSION['student_email'] = (string)($data['student_email'] ?? '');
+                    $_SESSION['student_status'] = (string)($data['student_status'] ?? 'Approved');
+                    $_SESSION['login_logged'] = true;
+                }
+            }
+        }
+    } elseif (isset($_SESSION['student_id']) && empty($_COOKIE['h2l_student_auth']) && !headers_sent()) {
+        setStudentAuthCookie($_SESSION);
+    }
+}
+
+restoreAuthSessionFromCookie();
 
 /**
  * Store generated CAPTCHA code in both Session and HMAC-signed Cookie for serverless reliability
@@ -1084,6 +1268,8 @@ function getIndividualPersonnelTaskStats(?PDO $pdo, array $taskRows): array {
 }
 
 // Global PDO instance helper & automatic overdue task synchronization
-$pdo = getDBConnection();
-syncOverdueTasks($pdo);
+if (!defined('H2L_SKIP_DB_SESSION')) {
+    $pdo = getDBConnection();
+    syncOverdueTasks($pdo);
+}
 ?>

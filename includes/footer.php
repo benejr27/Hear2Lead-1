@@ -6,7 +6,9 @@
   </div>
 </footer>
 
-<?php include_once __DIR__ . '/login_modal.php'; ?>
+<?php if (!isset($_SESSION['user_id']) && !isset($_SESSION['student_id'])): ?>
+  <?php include_once __DIR__ . '/login_modal.php'; ?>
+<?php endif; ?>
 <script src="../assets/js/main.js?v=<?= @filemtime(__DIR__ . '/../assets/js/main.js') ?: time() ?>"></script>
 </body>
 </html>

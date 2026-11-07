@@ -1,19 +1,14 @@
 <?php
 // includes/live_sync.php - Real-Time Data Tunneling & Change Fingerprint Endpoint
+define('H2L_SKIP_DB_SESSION', true);
 require_once __DIR__ . '/../config/db.php';
+$pdo = getDBConnection();
 
 header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
 header('Pragma: no-cache');
 
-$is_authenticated = isset($_SESSION['user_id']) || isset($_SESSION['student_id']);
-$user_id = intval($_SESSION['user_id'] ?? 0);
-$student_id = intval($_SESSION['student_id'] ?? 0);
-
-// Release session lock immediately so background polling never blocks page navigation
-if (session_status() === PHP_SESSION_ACTIVE) {
-    session_write_close();
-}
+$is_authenticated = !empty($_COOKIE['h2l_officer_auth']) || !empty($_COOKIE['h2l_student_auth']) || isset($_SESSION['user_id']) || isset($_SESSION['student_id']);
 
 try {
     $sql = "SELECT

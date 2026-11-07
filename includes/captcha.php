@@ -1,6 +1,11 @@
 <?php
 // includes/captcha.php - Secure Alphanumeric CAPTCHA Image Generator (Serverless & Local Compatible)
+// Skip DB session handler in image generator to avoid concurrent DB session race conditions on serverless
+define('H2L_SKIP_DB_SESSION', true);
 require_once __DIR__ . '/../config/db.php';
+if (session_status() === PHP_SESSION_NONE && !getenv('VERCEL') && !getenv('DATABASE_URL') && !getenv('POSTGRES_URL')) {
+    @session_start();
+}
 
 if (ob_get_level() > 0) {
     @ob_clean();

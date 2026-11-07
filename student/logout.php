@@ -1,7 +1,9 @@
 <?php
 // student/logout.php - Logout student session
-if (session_status() === PHP_SESSION_NONE) {
-    session_start();
+require_once __DIR__ . '/../config/db.php';
+
+if (function_exists('clearStudentAuthCookie')) {
+    clearStudentAuthCookie();
 }
 
 unset($_SESSION['student_id']);
